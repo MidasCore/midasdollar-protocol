@@ -688,7 +688,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_wbnbPercent",
+        "name": "_usdtPercent",
         "type": "uint256"
       }
     ],
@@ -750,29 +750,11 @@
       },
       {
         "internalType": "uint256",
-        "name": "_wbnbPercent",
+        "name": "_usdtPercent",
         "type": "uint256"
       }
     ],
     "name": "setExpansionPercent",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "_tokenB",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "_lpAdd",
-        "type": "address"
-      }
-    ],
-    "name": "setLpPairAddress",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -791,7 +773,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_wbnbAmount",
+        "name": "_usdtAmount",
         "type": "uint256"
       }
     ],
@@ -850,9 +832,14 @@
         "internalType": "uint256",
         "name": "_pid",
         "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "_lpAdd",
+        "type": "address"
       }
     ],
-    "name": "setShareRewardPoolId",
+    "name": "setShareRewardPoolIdAndLpPairAddress",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -995,7 +982,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_wbnbPoolStakedAmount",
+        "name": "_usdtPoolStakedAmount",
         "type": "uint256"
       }
     ],
@@ -1050,7 +1037,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_wbnbBal",
+        "name": "_usdtBal",
         "type": "uint256"
       },
       {
@@ -1078,7 +1065,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_wbnbPercent",
+        "name": "_usdtPercent",
         "type": "uint256"
       }
     ],

@@ -12,7 +12,7 @@
     "slint": "yarn prettier --write 'contracts/**/*.sol' && yarn solhint 'contracts/**/*.sol'",
     "deploy-kovan": "hardhat deploy --network kovan",
     "kovan-addresses": "hardhat --network kovan run scripts/addresses.ts",
-    "build": "hardhat compile",
+    "compile": "hardhat compile",
     "test": "hardhat test",
     "test:verbose": "VERBOSE=true hardhat test",
     "coverage": "npm run build && npx buidler coverage --temp artifacts --network coverage",

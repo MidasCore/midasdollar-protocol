@@ -13,6 +13,7 @@ import "./utils/ContractGuard.sol";
 import "./interfaces/IBasisAsset.sol";
 import "./interfaces/IOracle.sol";
 import "./interfaces/IBoardroom.sol";
+import "./interfaces/ICommissionBoardroom.sol";
 import "./interfaces/ITreasury.sol";
 
 /**
@@ -82,7 +83,8 @@ contract Treasury is ContractGuard, ITreasury {
     uint256 public marketingFundSharedPercent;
 
     /* =================== Added variables (need to keep orders for proxy to work) =================== */
-    //// TO BE ADDED
+    address public commissionBoardroom;
+    uint256 public commissionBoardroomSharedPercent;
 
     /* =================== Events =================== */
 
@@ -92,6 +94,7 @@ contract Treasury is ContractGuard, ITreasury {
     event BoughtBonds(address indexed from, uint256 dollarAmount, uint256 bondAmount);
     event TreasuryFunded(uint256 timestamp, uint256 seigniorage);
     event BoardroomFunded(uint256 timestamp, uint256 seigniorage);
+    event CommissionBoardroomFunded(uint256 timestamp, uint256 seigniorage);
     event DaoFundFunded(uint256 timestamp, uint256 seigniorage);
     event MiVaultsFundFunded(uint256 timestamp, uint256 seigniorage);
     event MarketingFundFunded(uint256 timestamp, uint256 seigniorage);
@@ -354,19 +357,24 @@ contract Treasury is ContractGuard, ITreasury {
 
     function setExtraFunds(address _daoFund, uint256 _daoFundSharedPercent,
         address _miVaultsFund, uint256 _miVaultsFundSharedPercent,
-        address _marketingFund, uint256 _marketingFundSharedPercent) external onlyOperator {
+        address _marketingFund, uint256 _marketingFundSharedPercent,
+        address _commissionBoardroom, uint256 _commissionBoardroomSharedPercent) external onlyOperator {
         require(_daoFund != address(0), "zero");
         require(_daoFundSharedPercent <= 3000, "out of range"); // <= 30%
-        require(_miVaultsFund != address(0), "zero");
+        require(_miVaultsFund != address(0) || _miVaultsFundSharedPercent == 0, "zero");
         require(_miVaultsFundSharedPercent <= 1000, "out of range"); // <= 10%
-        require(_marketingFund != address(0), "zero");
+        require(_marketingFund != address(0) || _marketingFundSharedPercent == 0, "zero");
         require(_marketingFundSharedPercent <= 1000, "out of range"); // <= 10%
+        require(_commissionBoardroom != address(0) || _commissionBoardroomSharedPercent == 0, "zero");
+        require(_commissionBoardroomSharedPercent <= 2000, "out of range"); // <= 20%
         daoFund = _daoFund;
         daoFundSharedPercent = _daoFundSharedPercent;
         miVaultsFund = _miVaultsFund;
         miVaultsFundSharedPercent = _miVaultsFundSharedPercent;
         marketingFund = _marketingFund;
         marketingFundSharedPercent = _marketingFundSharedPercent;
+        commissionBoardroom = _commissionBoardroom;
+        commissionBoardroomSharedPercent = _commissionBoardroomSharedPercent;
     }
 
     function setAllocateSeigniorageSalary(uint256 _allocateSeigniorageSalary) external onlyOperator {
@@ -501,8 +509,14 @@ contract Treasury is ContractGuard, ITreasury {
             emit MarketingFundFunded(now, _marketingSharedAmount);
             _amount = _amount.sub(_marketingSharedAmount);
         }
-        IERC20(dollar).safeApprove(boardroom, 0);
-        IERC20(dollar).safeApprove(boardroom, _amount);
+        if (commissionBoardroomSharedPercent > 0) {
+            uint256 _commissionBoardroomSharedAmount = _amount.mul(commissionBoardroomSharedPercent).div(10000);
+            IERC20(dollar).safeIncreaseAllowance(commissionBoardroom, _commissionBoardroomSharedAmount);
+            IBoardroom(commissionBoardroom).allocateSeigniorage(_commissionBoardroomSharedAmount);
+            emit CommissionBoardroomFunded(now, _commissionBoardroomSharedAmount);
+            _amount = _amount.sub(_commissionBoardroomSharedAmount);
+        }
+        IERC20(dollar).safeIncreaseAllowance(boardroom, _amount);
         IBoardroom(boardroom).allocateSeigniorage(_amount);
         emit BoardroomFunded(now, _amount);
     }
@@ -577,5 +591,19 @@ contract Treasury is ContractGuard, ITreasury {
 
     function boardroomGovernanceRecoverUnsupported(address _token, uint256 _amount, address _to) external onlyOperator {
         IBoardroom(boardroom).governanceRecoverUnsupported(_token, _amount, _to);
+    }
+
+    /* ========== COMMISSION BOARDROOM CONTROLLING FUNCTIONS ========== */
+
+    function commissionBoardroomAddRewardPool(address _rewardToken, uint256 _startBlock, uint256 _endRewardBlock, uint256 _rewardPerBlock) external onlyOperator {
+        ICommissionBoardroom(commissionBoardroom).addRewardPool(_rewardToken, _startBlock, _endRewardBlock, _rewardPerBlock);
+    }
+
+    function commissionBoardroomSetRewardPool(uint256 _pid, uint256 _endRewardBlock, uint256 _rewardPerBlock) external onlyOperator {
+        ICommissionBoardroom(commissionBoardroom).setRewardPool(_pid, _endRewardBlock, _rewardPerBlock);
+    }
+
+    function commissionBoardroomGovernanceRecoverUnsupported(address _token, uint256 _amount, address _to) external onlyOperator {
+        ICommissionBoardroom(commissionBoardroom).governanceRecoverUnsupported(_token, _amount, _to);
     }
 }

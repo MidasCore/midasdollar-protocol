@@ -42,6 +42,9 @@ contract Oracle is IEpoch {
     address public treasury;
     mapping(uint256 => uint256) public epochDollarPrice;
 
+    /* =================== Added variables (need to keep orders for proxy to work) =================== */
+    uint256 public priceAppreciation;
+
     /* =================== Events =================== */
 
     event Initialized(address indexed executor, uint256 at);
@@ -107,6 +110,11 @@ contract Oracle is IEpoch {
         treasury = _treasury;
     }
 
+    function setPriceAppreciation(uint256 _priceAppreciation) external onlyOperator {
+        require(_priceAppreciation <= 1e17, "_priceAppreciation is insane"); // <= 10%
+        priceAppreciation = _priceAppreciation;
+    }
+
     /* ========== MUTABLE FUNCTIONS ========== */
 
     /** @dev Updates 1-day EMA price from Uniswap.  */
@@ -134,6 +142,10 @@ contract Oracle is IEpoch {
 
     // note this will always return 0 before update has been called successfully for the first time.
     function consult(address _token, uint256 _amountIn) public view returns (uint144 amountOut) {
+        if (priceAppreciation > 0) {
+            uint256 _added = _amountIn.mul(priceAppreciation).div(1e18);
+            _amountIn = _amountIn.add(_added);
+        }
         if (_token == token0) {
             amountOut = price0Average.mul(_amountIn).decode144();
         } else {
@@ -143,6 +155,10 @@ contract Oracle is IEpoch {
     }
 
     function twap(address _token, uint256 _amountIn) external view returns (uint144 _amountOut) {
+        if (priceAppreciation > 0) {
+            uint256 _added = _amountIn.mul(priceAppreciation).div(1e18);
+            _amountIn = _amountIn.add(_added);
+        }
         (uint256 price0Cumulative, uint256 price1Cumulative, uint32 blockTimestamp) = UniswapV2OracleLibrary.currentCumulativePrices(address(pair));
         uint32 timeElapsed = blockTimestamp - blockTimestampLast; // overflow is desired
         if (_token == token0) {

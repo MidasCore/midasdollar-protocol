@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 
 import "../interfaces/IUniswapV2Router.sol";
+import "../interfaces/IUniswapV2Pair.sol";
 import "../interfaces/IBPool.sol";
 import "../interfaces/IBoardroom.sol";
 import "../interfaces/IShare.sol";
@@ -66,7 +67,8 @@ contract CommunityFund {
     mapping(address => address) public lpPairAddress; // [BUSD, USDT, BDO, bCash] -> [LP]: 0xD65F81878517039E39c359434d8D8bD46CC4531F, 0xd245BDb115707730136F0459e2aa9b0b19023724, ...
 
     /* =================== Added variables (need to keep orders for proxy to work) =================== */
-    //// TO BE ADDED
+    address public constant lpDollarBusd = address(0xD65F81878517039E39c359434d8D8bD46CC4531F);
+    address public constant lpDollarUsdt = address(0xd245BDb115707730136F0459e2aa9b0b19023724);
 
     /* ========== EVENTS ========== */
 
@@ -147,11 +149,8 @@ contract CommunityFund {
         shareRewardPool = _shareRewardPool;
     }
 
-    function setShareRewardPoolId(address _tokenB, uint256 _pid) external onlyStrategist {
+    function setShareRewardPoolIdAndLpPairAddress(address _tokenB, uint256 _pid, address _lpAdd) external onlyStrategist {
         shareRewardPoolId[_tokenB] = _pid;
-    }
-
-    function setLpPairAddress(address _tokenB, address _lpAdd) external onlyStrategist {
         lpPairAddress[_tokenB] = _lpAdd;
     }
 
@@ -163,24 +162,24 @@ contract CommunityFund {
         publicAllowed = _publicAllowed;
     }
 
-    function setExpansionPercent(uint256 _dollarPercent, uint256 _busdPercent, uint256 _wbnbPercent) external onlyStrategist {
-        require(_dollarPercent.add(_busdPercent).add(_wbnbPercent) == 10000, "!100%");
+    function setExpansionPercent(uint256 _dollarPercent, uint256 _busdPercent, uint256 _usdtPercent) external onlyStrategist {
+        require(_dollarPercent.add(_busdPercent).add(_usdtPercent) == 10000, "!100%");
         expansionPercent[0] = _dollarPercent;
         expansionPercent[1] = _busdPercent;
-        expansionPercent[2] = _wbnbPercent;
+        expansionPercent[2] = _usdtPercent;
     }
 
-    function setContractionPercent(uint256 _dollarPercent, uint256 _busdPercent, uint256 _wbnbPercent) external onlyStrategist {
-        require(_dollarPercent.add(_busdPercent).add(_wbnbPercent) == 10000, "!100%");
+    function setContractionPercent(uint256 _dollarPercent, uint256 _busdPercent, uint256 _usdtPercent) external onlyStrategist {
+        require(_dollarPercent.add(_busdPercent).add(_usdtPercent) == 10000, "!100%");
         contractionPercent[0] = _dollarPercent;
         contractionPercent[1] = _busdPercent;
-        contractionPercent[2] = _wbnbPercent;
+        contractionPercent[2] = _usdtPercent;
     }
 
-    function setMaxAmountToTrade(uint256 _dollarAmount, uint256 _busdAmount, uint256 _wbnbAmount) external onlyStrategist {
+    function setMaxAmountToTrade(uint256 _dollarAmount, uint256 _busdAmount, uint256 _usdtAmount) external onlyStrategist {
         maxAmountToTrade[dollar] = _dollarAmount;
         maxAmountToTrade[busd] = _busdAmount;
-        maxAmountToTrade[wbnb] = _wbnbAmount;
+        maxAmountToTrade[usdt] = _usdtAmount;
     }
 
     function setDollarPriceToSell(uint256 _dollarPriceToSell) external onlyStrategist {
@@ -223,20 +222,27 @@ contract CommunityFund {
         return IBoardroom(boardroom).earned(address(this));
     }
 
-    function tokenBalances() public view returns (uint256 _dollarBal, uint256 _busdBal, uint256 _wbnbBal, uint256 _totalBal) {
+    function tokenBalances() public view returns (uint256 _dollarBal, uint256 _busdBal, uint256 _usdtBal, uint256 _totalBal) {
         _dollarBal = IERC20(dollar).balanceOf(address(this));
         _busdBal = IERC20(busd).balanceOf(address(this));
-        _wbnbBal = IERC20(wbnb).balanceOf(address(this));
-        _totalBal = _dollarBal.add(_busdBal).add(_wbnbBal);
+        _usdtBal = IERC20(usdt).balanceOf(address(this));
+        _totalBal = _dollarBal.add(_busdBal).add(_usdtBal);
     }
 
-    function tokenPercents() public view returns (uint256 _dollarPercent, uint256 _busdPercent, uint256 _wbnbPercent) {
-        (uint256 _dollarBal, uint256 _busdBal, uint256 _wbnbBal, uint256 _totalBal) = tokenBalances();
+    function tokenPercents() public view returns (uint256 _dollarPercent, uint256 _busdPercent, uint256 _usdtPercent) {
+        (uint256 _dollarBal, uint256 _busdBal, uint256 _usdtBal, uint256 _totalBal) = tokenBalances();
         if (_totalBal > 0) {
             _dollarPercent = _dollarBal.mul(10000).div(_totalBal);
             _busdPercent = _busdBal.mul(10000).div(_totalBal);
-            _wbnbPercent = _wbnbBal.mul(10000).div(_totalBal);
+            _usdtPercent = _usdtBal.mul(10000).div(_totalBal);
         }
+    }
+
+    function dollarLpReserves() public view returns (uint256 _dollarBusdReserve, uint256 _dollarUsdtReserve, uint256 _totalDollarReserve) {
+        address _dollar = dollar;
+        (_dollarBusdReserve, ) = _pancakeGetReserves(_dollar, busd, lpDollarBusd);
+        (_dollarUsdtReserve, ) = _pancakeGetReserves(_dollar, usdt, lpDollarUsdt);
+        _totalDollarReserve = _dollarBusdReserve.add(_dollarUsdtReserve);
     }
 
     function getDollarPrice() public view returns (uint256 dollarPrice) {
@@ -278,55 +284,38 @@ contract CommunityFund {
     }
 
     function rebalance() public checkPublicAllow {
-        (uint256 _dollarBal, uint256 _busdBal, uint256 _wbnbBal, uint256 _totalBal) = tokenBalances();
+        (uint256 _dollarBal, uint256 _busdBal, uint256 _usdtBal, uint256 _totalBal) = tokenBalances();
         if (_totalBal > 0) {
             uint256 _dollarPercent = _dollarBal.mul(10000).div(_totalBal);
-            uint256 _busdPercent = _busdBal.mul(10000).div(_totalBal);
-            uint256 _wbnbPercent = _wbnbBal.mul(10000).div(_totalBal);
+            // uint256 _busdPercent = _busdBal.mul(10000).div(_totalBal);
+            // uint256 _usdtPercent = _usdtBal.mul(10000).div(_totalBal);
             uint256 _dollarPrice = getDollarUpdatedPrice();
             if (_dollarPrice >= dollarPriceToSell) {// expansion: sell MDO
                 if (_dollarPercent > expansionPercent[0]) {
-                    uint256 _sellingMdo = _dollarBal.mul(_dollarPercent.sub(expansionPercent[0])).div(10000);
-                    if (_busdPercent >= expansionPercent[1]) {// enough BUSD
-                        if (_wbnbPercent < expansionPercent[2]) {// short of WBNB: buy WBNB
-                            _swapToken(dollar, wbnb, _sellingMdo);
-                        } else {
-                            if (_busdPercent.sub(expansionPercent[1]) <= _wbnbPercent.sub(expansionPercent[2])) {// has more WBNB than BUSD: buy BUSD
-                                _swapToken(dollar, busd, _sellingMdo);
-                            } else {// has more BUSD than WBNB: buy WBNB
-                                _swapToken(dollar, wbnb, _sellingMdo);
-                            }
-                        }
-                    } else {// short of BUSD
-                        if (_wbnbPercent >= expansionPercent[2]) {// enough WBNB: buy BUSD
-                            _swapToken(dollar, busd, _sellingMdo);
-                        } else {// short of WBNB
-                            uint256 _sellingMdoToBusd = _sellingMdo.div(2);
-                            _swapToken(dollar, busd, _sellingMdoToBusd);
-                            _swapToken(dollar, wbnb, _sellingMdo.sub(_sellingMdoToBusd));
-                        }
+                    uint256 _sellingDollar = _dollarBal.mul(_dollarPercent.sub(expansionPercent[0])).div(10000);
+                    uint256 _maxDollarAmountToTrade = maxAmountToTrade[dollar];
+                    if (_sellingDollar > _maxDollarAmountToTrade) {
+                        _sellingDollar = _maxDollarAmountToTrade;
                     }
+                    (uint256 _dollarBusdReserve, , uint256 _totalDollarReserve) = dollarLpReserves();
+                    uint256 _sellAmountToBusdPool = _sellingDollar.mul(_dollarBusdReserve).div(_totalDollarReserve);
+                    uint256 _sellAmountToUsdtPool = _sellingDollar.sub(_sellAmountToBusdPool);
+                    _swapToken(dollar, busd, _sellAmountToBusdPool);
+                    _swapToken(dollar, usdt, _sellAmountToUsdtPool);
                 }
             } else if (_dollarPrice <= dollarPriceToBuy && (msg.sender == operator || msg.sender == strategist)) {// contraction: buy MDO
-                if (_busdPercent >= contractionPercent[1]) {// enough BUSD
-                    if (_wbnbPercent <= contractionPercent[2]) {// short of WBNB: sell BUSD
-                        uint256 _sellingBUSD = _busdBal.mul(_busdPercent.sub(contractionPercent[1])).div(10000);
-                        _swapToken(busd, dollar, _sellingBUSD);
-                    } else {
-                        if (_busdPercent.sub(contractionPercent[1]) > _wbnbPercent.sub(contractionPercent[2])) {// has more BUSD than WBNB: sell BUSD
-                            uint256 _sellingBUSD = _busdBal.mul(_busdPercent.sub(contractionPercent[1])).div(10000);
-                            _swapToken(busd, dollar, _sellingBUSD);
-                        } else {// has more WBNB than BUSD: sell WBNB
-                            uint256 _sellingWBNB = _wbnbBal.mul(_wbnbPercent.sub(contractionPercent[2])).div(10000);
-                            _swapToken(wbnb, dollar, _sellingWBNB);
-                        }
-                    }
-                } else {// short of BUSD
-                    if (_wbnbPercent > contractionPercent[2]) {// enough WBNB: sell WBNB
-                        uint256 _sellingWBNB = _wbnbBal.mul(_wbnbPercent.sub(contractionPercent[2])).div(10000);
-                        _swapToken(wbnb, dollar, _sellingWBNB);
-                    }
+                uint256 _buyingDollar = _dollarBal.mul(contractionPercent[0].sub(_dollarPercent)).div(10000);
+                uint256 _maxDollarAmountToTrade = maxAmountToTrade[dollar];
+                if (_buyingDollar > _maxDollarAmountToTrade) {
+                    _buyingDollar = _maxDollarAmountToTrade;
                 }
+                (uint256 _dollarBusdReserve, , uint256 _totalDollarReserve) = dollarLpReserves();
+                uint256 _buyAmountToBusdPool = _buyingDollar.mul(_dollarBusdReserve).div(_totalDollarReserve);
+                uint256 _buyAmountToUsdtPool = _buyingDollar.sub(_buyAmountToBusdPool);
+                if (_buyAmountToBusdPool > _busdBal) _buyAmountToBusdPool = _busdBal;
+                if (_buyAmountToUsdtPool > _usdtBal) _buyAmountToUsdtPool = _usdtBal;
+                _swapToken(busd, dollar, _buyAmountToBusdPool);
+                _swapToken(usdt, dollar, _buyAmountToUsdtPool);
             }
         }
     }
@@ -413,6 +402,23 @@ contract CommunityFund {
         pancakeRouter.removeLiquidity(_tokenA, _tokenB, _liquidity, 1, 1, address(this), now.add(1800));
     }
 
+    function _pancakeGetReserves(address tokenA, address tokenB, address pair) internal view returns (uint256 _reserveA, uint256 _reserveB) {
+        address _token0 = IUniswapV2Pair(pair).token0();
+        address _token1 = IUniswapV2Pair(pair).token1();
+        (uint112 _reserve0, uint112 _reserve1, ) = IUniswapV2Pair(pair).getReserves();
+        if (_token0 == tokenA) {
+            if (_token1 == tokenB) {
+                _reserveA = uint256(_reserve0);
+                _reserveB = uint256(_reserve1);
+            }
+        } else if (_token0 == tokenB) {
+            if (_token1 == tokenA) {
+                _reserveA = uint256(_reserve1);
+                _reserveB = uint256(_reserve0);
+            }
+        }
+    }
+
     /* ========== PROVIDE LP AND STAKE TO SHARE POOL ========== */
 
     function depositToSharePool(address _tokenB, uint256 _dollarAmount) external onlyStrategist {
@@ -444,7 +450,7 @@ contract CommunityFund {
 
     function exitAllSharePool() external {
         if (stakeAmountFromSharePool(busd) > 0) exitSharePool(busd);
-        if (stakeAmountFromSharePool(wbnb) > 0) exitSharePool(wbnb);
+        if (stakeAmountFromSharePool(usdt) > 0) exitSharePool(usdt);
     }
 
     function claimRewardFromSharePool(address _tokenB) public {
@@ -454,7 +460,7 @@ contract CommunityFund {
 
     function claimAllRewardFromSharePool() public {
         if (pendingFromSharePool(busd) > 0) claimRewardFromSharePool(busd);
-        if (pendingFromSharePool(wbnb) > 0) claimRewardFromSharePool(wbnb);
+        if (pendingFromSharePool(usdt) > 0) claimRewardFromSharePool(usdt);
     }
 
     function pendingFromSharePool(address _tokenB) public view returns(uint256) {
@@ -462,16 +468,16 @@ contract CommunityFund {
     }
 
     function pendingAllFromSharePool() public view returns(uint256) {
-        return pendingFromSharePool(busd).add(pendingFromSharePool(wbnb));
+        return pendingFromSharePool(busd).add(pendingFromSharePool(usdt));
     }
 
     function stakeAmountFromSharePool(address _tokenB) public view returns(uint256 _stakedAmount) {
         (_stakedAmount, ) = IShareRewardPool(shareRewardPool).userInfo(shareRewardPoolId[_tokenB], address(this));
     }
 
-    function stakeAmountAllFromSharePool() public view returns(uint256 _bnbPoolStakedAmount, uint256 _wbnbPoolStakedAmount) {
+    function stakeAmountAllFromSharePool() public view returns(uint256 _bnbPoolStakedAmount, uint256 _usdtPoolStakedAmount) {
         _bnbPoolStakedAmount = stakeAmountFromSharePool(busd);
-        _wbnbPoolStakedAmount = stakeAmountFromSharePool(wbnb);
+        _usdtPoolStakedAmount = stakeAmountFromSharePool(usdt);
     }
 
     /* ========== EMERGENCY ========== */
