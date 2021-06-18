@@ -90,10 +90,11 @@ contract FootballBets is OwnableUpgradeSafe {
     event NewTicket(address player, uint256 ticketIndex, uint256 matchId, uint8 betTypeId, uint256 betAmount, uint256 bettingTime);
     event DrawTicket(address player, uint256 ticketIndex, uint256 matchId, uint8 betTypeId, uint256 payout, uint256 claimedTime);
 
-    function initialize(address _mdo) public initializer {
+    function initialize(address _mdo, address _fund) public initializer {
         OwnableUpgradeSafe.__Ownable_init();
         mdo = _mdo;
-        standardPrice = 10 ether;
+        fund = _fund;
+        standardPrice = 1 ether;
         losePayoutRate = 100; // 1%
         admin[msg.sender] = true;
     }
@@ -177,7 +178,7 @@ contract FootballBets is OwnableUpgradeSafe {
     function addMatchInfo(string memory _matchName, uint256 _startBettingTime, uint256 _endBettingTime,
         string memory _betDescription1x2, uint32[] memory _odds1x2,
         string memory _betDescriptionHandicap, uint32[] memory _oddsHandicap,
-        string memory _betDescriptionOverUnder, uint32[] memory _oddsOverUnder, uint256[] memory _maxBudgets, address _fund) external onlyAdmin returns (uint256 _matchId) {
+        string memory _betDescriptionOverUnder, uint32[] memory _oddsOverUnder, uint256[] memory _maxBudgets) external onlyAdmin returns (uint256 _matchId) {
         // // 0: 1x2, 1: Handcap, 2: Over/Under
         require(_startBettingTime < _endBettingTime && now < _endBettingTime, "Invalid _endBettingTime");
         require(_maxBudgets.length == 3, "Invalid _betDescriptions length");
@@ -188,8 +189,6 @@ contract FootballBets is OwnableUpgradeSafe {
         require(_odds1x2[0] > 10000 && _odds1x2[1] > 10000 && _odds1x2[2] > 10000, "_odds1x2 must be greater than x1");
         require(_oddsHandicap[0] > 10000 && _oddsHandicap[1] > 10000, "_oddsHandicap must be greater than x1");
         require(_oddsOverUnder[0] > 10000 && _oddsOverUnder[1] > 10000, "_oddsOverUnder must be greater than x1");
-
-        fund = _fund;
 
         _matchId = matchInfos.length;
 
