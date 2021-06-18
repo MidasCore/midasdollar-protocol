@@ -6,23 +6,26 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-ethereum-package/contracts/access/Ownable.sol";
 
-contract EuroBet is Ownable {
+contract FootballBets is OwnableUpgradeSafe {
     using SafeMath for uint256;
+    using SafeMath for uint32;
     using SafeMath for uint8;
     using SafeERC20 for IERC20;
 
     /* ========== STATE VARIABLES ========== */
-    bool public initialized = false;
-
     address public mdo = address(0x113d0D0F8f31050D382Eb0B9f5f0bedddf8100cb);
 
-    string public name;
-    uint256 public startBettingTime;
-    uint256 public endBettingTime;
-    uint256 public numTickets;
-    uint8 public matchStatus; // 0-NEW 1-FINISH 8-CANCEL/POSTPONE
+    struct MatchInfo {
+        uint256 index;
+        string name;
+        uint256 startBettingTime;
+        uint256 endBettingTime;
+        uint256 numTickets;
+        uint8 status; // 0-NEW 1-FINISH 8-CANCEL/POSTPONE
+    }
+
     address public fund;
 
     struct BetType { // 3 doors: A WIN, DRAW, B WIN
@@ -41,6 +44,7 @@ contract EuroBet is Ownable {
     struct Ticket {
         uint256 index;
         address player;
+        uint256 matchId;
         uint8 betTypeId;
         uint8 betDoor;
         uint32 betOdd;
@@ -59,8 +63,10 @@ contract EuroBet is Ownable {
     uint256 public standardPrice = 10 ether;
     uint256 public losePayoutRate = 100; // payback even you lose
 
-    BetType[] public matchBetTypes; // 0: 1x2, 1: Handcap, 2: Over/Under
+    MatchInfo[] public matchInfos; // All matches
+    mapping(uint256 => BetType[]) public matchBetTypes; // Store all match bet types: matchId => array of BetType
     Ticket[] public tickets; // All tickets of player
+    mapping(address => mapping(uint256 => uint256[])) public matchesOf; // Store all ticket of player/match: player => matchId => ticket_id
     mapping(address => uint256[]) public ticketsOf; // Store all ticket of player: player => ticket_id
 
     mapping(address => PlayerStat) public playerStats;
@@ -75,25 +81,25 @@ contract EuroBet is Ownable {
     /* ========== EVENTS ========== */
 
     event SetAdminStatus(address account, bool adminStatus);
-    event AddMatchInfo(string matchName, uint256 startBettingTime, uint256 endBettingTime);
-    event AddBetType(uint8 betTypeId, string betDescription, uint8 numDoors, uint32[] odds, uint256 maxBudget);
-    event EditBetTypeOdds(uint8 betTypeId, uint32[] odds);
-    event EditBetTypeBudget(uint8 betTypeId, uint256 maxBudget);
-    event CancelMatch();
-    event SettleMatchResult(uint8 betTypeId, uint8[] doorResults);
-    event NewTicket(address player, uint256 ticketIndex, uint8 betTypeId, uint256 betAmount, uint256 bettingTime);
-    event DrawTicket(address player, uint256 ticketIndex, uint8 betTypeId, uint256 payout, uint256 claimedTime);
+    event AddMatchInfo(uint256 matchId, string matchName, uint256 startBettingTime, uint256 endBettingTime);
+    event AddBetType(uint256 matchId, uint8 betTypeId, string betDescription, uint8 numDoors, uint32[] odds, uint256 maxBudget);
+    event EditBetTypeOdds(uint256 matchId, uint8 betTypeId, uint32[] odds);
+    event EditBetTypeBudget(uint256 matchId, uint8 betTypeId, uint256 maxBudget);
+    event CancelMatch(uint256 matchId);
+    event SettleMatchResult(uint256 matchId, uint8 betTypeId, uint8[] doorResults);
+    event NewTicket(address player, uint256 ticketIndex, uint256 matchId, uint8 betTypeId, uint256 betAmount, uint256 bettingTime);
+    event DrawTicket(address player, uint256 ticketIndex, uint256 matchId, uint8 betTypeId, uint256 payout, uint256 claimedTime);
 
-    constructor() public {
+    function initialize(address _mdo) public initializer {
+        OwnableUpgradeSafe.__Ownable_init();
+        mdo = _mdo;
+        standardPrice = 10 ether;
+        losePayoutRate = 100; // 1%
+        admin[msg.sender] = true;
     }
 
     modifier onlyAdmin() {
         require(admin[msg.sender], "!admin");
-        _;
-    }
-
-    modifier notInitialized() {
-        require(!initialized, "initialized");
         _;
     }
 
@@ -108,12 +114,16 @@ contract EuroBet is Ownable {
         standardPrice = _standardPrice;
     }
 
-    function setStartBettingTime(uint256 _startBettingTime) external onlyOwner {
-        startBettingTime = _startBettingTime;
+    function setStartBettingTime(uint256 _matchId, uint256 _startBettingTime) external onlyOwner {
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        require(matchInfo.status == 0, "match is not new"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
+        matchInfo.startBettingTime = _startBettingTime;
     }
 
-    function setEndBettingTime(uint256 _endBettingTime) external onlyOwner {
-        endBettingTime = _endBettingTime;
+    function setEndBettingTime(uint256 _matchId, uint256 _endBettingTime) external onlyOwner {
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        require(matchInfo.status == 0, "match is not new"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
+        matchInfo.endBettingTime = _endBettingTime;
     }
 
     function setLosePayout(uint256 _losePayoutRate) external onlyOwner {
@@ -130,8 +140,36 @@ contract EuroBet is Ownable {
         return (_player == address(0x0)) ? tickets.length : ticketsOf[_player].length;
     }
 
-    function getMaxBetAmount(uint8 _betTypeId, uint8 _door) public view returns (uint256 _amount) {
-        BetType memory betType = matchBetTypes[_betTypeId];
+    function getMatchInfo(uint256 _matchId) external view
+    returns (uint256 _index, string memory _name, uint256 _startBettingTime, uint256 _endBettingTime,
+        uint8 _numberOfBetTypes, uint256 _numTickets, uint8 _status) {
+        MatchInfo memory matchInfo = matchInfos[_matchId];
+        _index = matchInfo.index;
+        _name = matchInfo.name;
+        _startBettingTime = matchInfo.startBettingTime;
+        _endBettingTime = matchInfo.endBettingTime;
+        _numberOfBetTypes = uint8(matchBetTypes[_matchId].length);
+        _numTickets = matchInfo.numTickets;
+        _status = matchInfo.status;
+    }
+
+    function getMatchBetType(uint256 _matchId, uint8 _betTypeId) external view
+    returns (string memory _description, uint8 _numDoors, uint32[] memory _odds, uint8[] memory _doorResults,
+        uint256 _numTickets, uint256 _totalBetAmount, uint256 _totalPayoutAmount, uint256[] memory _doorBetAmount, uint256 _maxBudget) {
+        BetType memory betType = matchBetTypes[_matchId][_betTypeId];
+        _description = betType.description;
+        _numDoors = betType.numDoors;
+        _odds = betType.odds;
+        _doorResults = betType.doorResults;
+        _numTickets = betType.numTickets;
+        _totalBetAmount = betType.totalBetAmount;
+        _totalPayoutAmount = betType.totalPayoutAmount;
+        _doorBetAmount = betType.doorBetAmount;
+        _maxBudget = betType.maxBudget;
+    }
+
+    function getMaxBetAmount(uint256 _matchId, uint8 _betTypeId, uint8 _door) public view returns (uint256 _amount) {
+        BetType memory betType = matchBetTypes[_matchId][_betTypeId];
         uint256 _odd = betType.odds[_door];
         return betType.totalBetAmount.add(betType.maxBudget).sub(betType.doorBetAmount[_door].mul(_odd).div(10000)).mul(10000).div(_odd.sub(10000));
     }
@@ -139,7 +177,7 @@ contract EuroBet is Ownable {
     function addMatchInfo(string memory _matchName, uint256 _startBettingTime, uint256 _endBettingTime,
         string memory _betDescription1x2, uint32[] memory _odds1x2,
         string memory _betDescriptionHandicap, uint32[] memory _oddsHandicap,
-        string memory _betDescriptionOverUnder, uint32[] memory _oddsOverUnder, uint256[] memory _maxBudgets, address _fund) external notInitialized {
+        string memory _betDescriptionOverUnder, uint32[] memory _oddsOverUnder, uint256[] memory _maxBudgets, address _fund) external onlyAdmin returns (uint256 _matchId) {
         // // 0: 1x2, 1: Handcap, 2: Over/Under
         require(_startBettingTime < _endBettingTime && now < _endBettingTime, "Invalid _endBettingTime");
         require(_maxBudgets.length == 3, "Invalid _betDescriptions length");
@@ -151,16 +189,22 @@ contract EuroBet is Ownable {
         require(_oddsHandicap[0] > 10000 && _oddsHandicap[1] > 10000, "_oddsHandicap must be greater than x1");
         require(_oddsOverUnder[0] > 10000 && _oddsOverUnder[1] > 10000, "_oddsOverUnder must be greater than x1");
 
-        initialized = true;
-
-        name = _matchName;
-        startBettingTime = _startBettingTime;
-        endBettingTime = _endBettingTime;
-        numTickets = 0;
-        matchStatus = 0;
         fund = _fund;
 
-        matchBetTypes.push(
+        _matchId = matchInfos.length;
+
+        matchInfos.push(
+            MatchInfo({
+            index : _matchId,
+            name : _matchName,
+            startBettingTime : _startBettingTime,
+            endBettingTime : _endBettingTime,
+            numTickets : 0,
+            status : 0
+            })
+        );
+
+        matchBetTypes[_matchId].push(
             BetType({
                 description: _betDescription1x2,
                 numDoors: 3,
@@ -175,7 +219,7 @@ contract EuroBet is Ownable {
             })
         );
 
-        matchBetTypes.push(
+        matchBetTypes[_matchId].push(
             BetType({
                 description: _betDescriptionHandicap,
                 numDoors: 2,
@@ -190,7 +234,7 @@ contract EuroBet is Ownable {
             })
         );
 
-        matchBetTypes.push(
+        matchBetTypes[_matchId].push(
             BetType({
                 description: _betDescriptionOverUnder,
                 numDoors: 2,
@@ -205,16 +249,17 @@ contract EuroBet is Ownable {
             })
         );
 
-        emit AddMatchInfo(_matchName, _startBettingTime, _endBettingTime);
-        emit AddBetType(0, _betDescription1x2, 3, _odds1x2, _maxBudgets[0]);
-        emit AddBetType(1, _betDescriptionHandicap, 2, _oddsHandicap, _maxBudgets[1]);
-        emit AddBetType(2, _betDescriptionOverUnder, 2, _oddsOverUnder, _maxBudgets[2]);
+        emit AddMatchInfo(_matchId, _matchName, _startBettingTime, _endBettingTime);
+        emit AddBetType(_matchId, 0, _betDescription1x2, 3, _odds1x2, _maxBudgets[0]);
+        emit AddBetType(_matchId, 1, _betDescriptionHandicap, 2, _oddsHandicap, _maxBudgets[1]);
+        emit AddBetType(_matchId, 2, _betDescriptionOverUnder, 2, _oddsOverUnder, _maxBudgets[2]);
     }
 
-    function editMatchBetTypeOdds(uint8 _betTypeId, uint32[] memory _odds) external onlyAdmin {
-        require(now <= endBettingTime, "late");
+    function editMatchBetTypeOdds(uint256 _matchId, uint8 _betTypeId, uint32[] memory _odds) external onlyAdmin {
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        require(now <= matchInfo.endBettingTime, "late");
 
-        BetType storage betType = matchBetTypes[_betTypeId];
+        BetType storage betType = matchBetTypes[_matchId][_betTypeId];
         require(betType.odds.length == _odds.length, "Invalid _odds");
 
         uint256 _numDoors = _odds.length;
@@ -224,55 +269,67 @@ contract EuroBet is Ownable {
 
         betType.odds = _odds;
 
-        emit EditBetTypeOdds(_betTypeId, _odds);
+        emit EditBetTypeOdds(_matchId, _betTypeId, _odds);
     }
 
-    function editMatchBetTypeBudget(uint8 _betTypeId, uint256 _maxBudget) external onlyAdmin {
-        require(now <= endBettingTime, "late");
+    function editMatchBetTypeBudget(uint256 _matchId, uint8 _betTypeId, uint256 _maxBudget) external onlyAdmin {
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        require(now <= matchInfo.endBettingTime, "late");
 
-        BetType storage betType = matchBetTypes[_betTypeId];
+        BetType storage betType = matchBetTypes[_matchId][_betTypeId];
         betType.maxBudget = _maxBudget;
 
-        emit EditBetTypeBudget(_betTypeId, _maxBudget);
+        emit EditBetTypeBudget(_matchId, _betTypeId, _maxBudget);
     }
 
-    function cancelMatch() external onlyAdmin {
-        require(matchStatus == 0, "match is not new"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
-        matchStatus = 8;
+    function cancelMatch(uint256 _matchId) external onlyAdmin {
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        require(matchInfo.status == 0, "match is not new"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
+        matchInfo.status = 8;
 
-        emit CancelMatch();
+        emit CancelMatch(_matchId);
     }
 
-    function settleMatchResult(uint8[] memory _doorResults1x2, uint8[] memory _doorResultsHandicap, uint8[] memory _doorResultsOverUnder) external onlyAdmin {
+    function settleMatchResult(uint256 _matchId, uint8[] memory _doorResults1x2, uint8[] memory _doorResultsHandicap, uint8[] memory _doorResultsOverUnder) external onlyAdmin {
         require(_doorResults1x2.length == 3, "Invalid _doorResults1x2 length");
         require(_doorResultsHandicap.length == 2, "Invalid _doorResultsHandicap length");
         require(_doorResultsOverUnder.length == 2, "Invalid _doorResultsOverUnder length");
 
-        if (msg.sender != owner() || now > endBettingTime.add(48 hours)) { // owner has rights to over-write the match result in 48 hours (in case admin made mistake)
-            require(matchStatus == 0, "match is not new"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        if (msg.sender != owner() || now > matchInfo.endBettingTime.add(48 hours)) { // owner has rights to over-write the match result in 48 hours (in case admin made mistake)
+            require(matchInfo.status == 0, "match is not new"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
         }
-        matchStatus = 1;
+        matchInfo.status = 1;
 
-        matchBetTypes[0].doorResults = _doorResults1x2;
-        matchBetTypes[1].doorResults = _doorResultsHandicap;
-        matchBetTypes[2].doorResults = _doorResultsOverUnder;
+        BetType storage betType = matchBetTypes[_matchId][0];
+        betType.doorResults = _doorResults1x2;
+        betType.status = 1;
 
-        emit SettleMatchResult(0, _doorResults1x2);
-        emit SettleMatchResult(1, _doorResultsHandicap);
-        emit SettleMatchResult(2, _doorResultsOverUnder);
+        betType = matchBetTypes[_matchId][1];
+        betType.doorResults = _doorResultsHandicap;
+        betType.status = 1;
+
+        betType = matchBetTypes[_matchId][2];
+        betType.doorResults = _doorResultsOverUnder;
+        betType.status = 1;
+
+        emit SettleMatchResult(_matchId, 0, _doorResults1x2);
+        emit SettleMatchResult(_matchId, 1, _doorResultsHandicap);
+        emit SettleMatchResult(_matchId, 2, _doorResultsOverUnder);
     }
 
-    function buyTicket(uint8 _betTypeId, uint8 _betDoor, uint32 _betOdd, uint256 _betAmount) public returns (uint256 _ticketIndex) {
+    function buyTicket(uint256 _matchId, uint8 _betTypeId, uint8 _betDoor, uint32 _betOdd, uint256 _betAmount) public returns (uint256 _ticketIndex) {
         require(_betAmount >= standardPrice, "_betAmount less than standard price");
 
-        uint256 _maxBetAmount = getMaxBetAmount(_betTypeId, _betDoor);
+        uint256 _maxBetAmount = getMaxBetAmount(_matchId, _betTypeId, _betDoor);
         require(_betAmount <= _maxBetAmount, "_betAmount exceeds _maxBetAmount");
 
-        require(now >= startBettingTime, "early");
-        require(now <= endBettingTime, "late");
-        require(matchStatus == 0, "match not opened for ticket"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
+        MatchInfo storage matchInfo = matchInfos[_matchId];
+        require(now >= matchInfo.startBettingTime, "early");
+        require(now <= matchInfo.endBettingTime, "late");
+        require(matchInfo.status == 0, "match not opened for ticket"); // 0-NEW 1-FINISH 2-CANCEL/POSTPONE
 
-        BetType storage betType = matchBetTypes[_betTypeId];
+        BetType storage betType = matchBetTypes[_matchId][_betTypeId];
         require(_betDoor < betType.numDoors, "Invalid _betDoor");
         require(_betOdd == betType.odds[_betDoor], "Invalid _betOdd");
 
@@ -285,6 +342,7 @@ contract EuroBet is Ownable {
             Ticket({
                 index : _ticketIndex,
                 player : _player,
+                matchId : _matchId,
                 betTypeId : _betTypeId,
                 betDoor : _betDoor,
                 betOdd : _betOdd,
@@ -296,33 +354,37 @@ contract EuroBet is Ownable {
             })
         );
 
-        numTickets = numTickets.add(1);
+        matchInfo.numTickets = matchInfo.numTickets.add(1);
         betType.numTickets = betType.numTickets.add(1);
         betType.totalBetAmount = betType.totalBetAmount.add(_betAmount);
         betType.doorBetAmount[_betDoor] = betType.doorBetAmount[_betDoor].add(_betAmount);
         totalBetAmount = totalBetAmount.add(_betAmount);
+        matchesOf[_player][_matchId].push(_ticketIndex);
         ticketsOf[_player].push(_ticketIndex);
         playerStats[_player].totalBet = playerStats[_player].totalBet.add(_betAmount);
 
-        emit NewTicket(_player, _ticketIndex, _betTypeId, _betAmount, now);
+        emit NewTicket(_player, _ticketIndex, _matchId, _betTypeId, _betAmount, now);
     }
 
     function settleBet(uint256 _ticketIndex) external returns (address _player, uint256 _payout) {
         require(_ticketIndex < tickets.length, "_ticketIndex out of range");
-        require(now > endBettingTime, "early");
 
         Ticket storage ticket = tickets[_ticketIndex];
         require(ticket.status == 0, "ticket settled");
 
+        uint256 _matchId = ticket.matchId;
+        MatchInfo memory matchInfo = matchInfos[_matchId];
+        require(now > matchInfo.endBettingTime, "early");
+
         uint8 _betTypeId = ticket.betTypeId;
-        BetType storage betType = matchBetTypes[_betTypeId];
+        BetType storage betType = matchBetTypes[_matchId][_betTypeId];
 
         uint256 _betAmount = ticket.betAmount;
         // Ticket status: 0-PENDING 1-WIN 2-LOSE 3-REFUND
-        if (matchStatus == 8) { // CANCEL/POSTPONE
+        if (matchInfo.status == 8) { // CANCEL/POSTPONE
             _payout = _betAmount;
             ticket.status = 8; // REFUND
-        } else if (matchStatus == 1) { // FINISH
+        } else if (matchInfo.status == 1) { // FINISH
             uint8 _betDoor = ticket.betDoor;
             uint8 _betDoorResult = betType.doorResults[_betDoor];
             if (_betDoorResult == 1) {
@@ -356,7 +418,7 @@ contract EuroBet is Ownable {
             IERC20(mdo).safeTransfer(_player, _payout);
         }
 
-        emit DrawTicket(_player, _ticketIndex, _betTypeId, _payout, now);
+        emit DrawTicket(_player, _ticketIndex, _matchId, _betTypeId, _payout, now);
     }
 
     // This function allows governance to take unsupported tokens out of the contract. This is in an effort to make someone whole, should they seriously mess up.
